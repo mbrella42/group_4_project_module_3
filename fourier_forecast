@@ -1,0 +1,106 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+#  fourier coefficients of time window:
+coefficient_start_date = pd.Timestamp('2016-01-01')
+coefficient_end_date   = pd.Timestamp('2023-01-01')
+
+# forecast:
+forecast_start_date = pd.Timestamp('2023-01-01')
+forecast_end_date   = pd.Timestamp('2023-01-14')
+
+samples_per_day = 144
+days_per_block = 10
+block_size = days_per_block * samples_per_day
+
+forecast_period = pd.date_range(forecast_start_date, forecast_end_date, freq='10T')
+num_samples_future = len(forecast_period)
+
+file_name = 'cleaned_data.csv'
+df = pd.read_csv(file_name, sep=',', index_col=0, parse_dates=True)
+print("data loaded:", len(df))
+
+df_coefficient = df[(df.index >= coefficient_start_date) & (df.index < coefficient_end_date)]
+signal = df_coefficient['NUMERIEKEWAARDE'].astype(float).values
+N = len(signal)
+print(f"data points: {N}")
+
+print("FFT")
+fft_coeffs = np.fft.fft(signal)
+
+df_actual = df[(df.index >= forecast_start_date) & (df.index < forecast_end_date)]
+actual_data = df_actual['NUMERIEKEWAARDE'].astype(float).values
+block_length = 10
+if len(actual_data) < block_length:
+    raise ValueError("Not enough actual forecast data to compare a block of 10 points.")
+actual_block = actual_data[:block_length]
+
+errors = []
+
+for i in range(0, N - block_length + 1):
+    train_block = signal[i:i+block_length]
+    mse = np.mean((train_block - actual_block) ** 2)
+    errors.append(mse)
+
+errors = np.array(errors)
+best_i = np.argmin(errors)
+
+best_delta = int(round(best_i + (block_length - 1) / 2))
+print(f"Best candidate block starts at index {best_i} with average index {best_delta} (MSE = {errors[best_i]:.4f})")
+
+t_start = N + best_delta
+print(f"Optimal phase offset: t_start = N + {best_delta} = {t_start}")
+
+def fourier_forecast_block(t_extended, fft_coeffs, N, block_size):
+    forecast = []
+
+    k = np.arange(N)
+
+    total_blocks = (len(t_extended) + block_size - 1) // block_size
+
+    for i in range(0, len(t_extended), block_size):
+        block_index = i // block_size + 1
+        t_block = t_extended[i: i + block_size]
+        exponent = np.exp(2j * np.pi * np.outer(t_block, k) / N)
+        forecast_block = np.dot(exponent, fft_coeffs) / N
+        forecast.append(forecast_block)
+        days_processed = min((i + block_size) / samples_per_day, num_samples_future / samples_per_day)
+
+        print(f"Processed {days_processed:.2f} days of forecast (block {block_index}/{total_blocks})")
+
+    return np.concatenate(forecast).real
+
+t_future = np.arange(t_start, t_start + num_samples_future)
+print("Starting Fourier forecast with t_start =", t_start)
+forecast = fourier_forecast_block(t_future, fft_coeffs, N, block_size)
+
+time_actual = df_actual.index
+min_length = min(len(forecast), len(actual_data))
+forecast = forecast[:min_length]
+actual_data = actual_data[:min_length]
+
+corr_matrix = np.corrcoef(forecast, actual_data)
+corr_coef = corr_matrix[0, 1]
+squared_errors = (forecast - actual_data) ** 2
+rmse = np.sqrt(np.mean(squared_errors))
+mae = np.mean(np.abs(forecast - actual_data))
+abs_squared_error = np.sum(squared_errors)
+
+print("\n--- Forecast vs. Actual Comparison ---")
+print(f"Pearson Correlation Coefficient: {corr_coef:.4f}")
+print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
+print(f"Mean Absolute Error (MAE): {mae:.4f}")
+print(f"Absolute Squared Error (Σ Squared Error): {abs_squared_error:.4f}")
+
+
+plt.figure(figsize=(14, 7))
+plt.plot(forecast_period[:min_length], forecast, label='Forecast (Fourier Prediction)', linestyle='--', linewidth=2)
+plt.plot(time_actual[:min_length], actual_data, label='Actual Data', alpha=0.7)
+plt.xlabel('Date')
+plt.ylabel('Water Level')
+plt.title('Fourier Forecast vs. Actual Water Level Data for 2024')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
